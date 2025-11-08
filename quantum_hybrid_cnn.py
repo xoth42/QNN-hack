@@ -87,15 +87,22 @@ class QuantumHybridCNN(nn.Module):
         self.fc_output = nn.Linear(n_qubits, 10)
     
     def forward(self, x):
+        batch_size = x.size(0)
+        
         # Classical feature extraction
         x = self.conv_layers(x)
-        x = x.view(x.size(0), -1)
+        x = x.view(batch_size, -1)
         
         # Reduce to quantum dimension
         x = torch.tanh(self.fc_to_quantum(x))  # Normalize to [-1, 1] for quantum encoding
         
-        # Quantum processing
-        x = self.quantum_layer(x)
+        # Quantum processing (process each sample individually due to PennyLane batching)
+        quantum_outputs = []
+        for i in range(batch_size):
+            sample = x[i]  # Get single sample (1D tensor)
+            q_out = self.quantum_layer(sample)
+            quantum_outputs.append(q_out)
+        x = torch.stack(quantum_outputs, dim=0)
         
         # Final classification
         x = self.fc_output(x)

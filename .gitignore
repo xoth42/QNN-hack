@@ -14,7 +14,7 @@ env/
 venv/
 .venv/
 cnn/
-
+.env
 # VSCode/IDE/
 .vscode/
 .idea/

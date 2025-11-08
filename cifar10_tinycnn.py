@@ -1,8 +1,7 @@
 """
 How to run:
-    1. Run `bash setup_cnn_env.sh` and follow its instructions.
-    2. Activate the environment: `conda activate cnn`
-    3. Run: `python cifar10_tinycnn.py`
+    1. Run `python setup_pip.py` (no conda needed)
+    2. Run: `python cifar10_tinycnn.py`
 
 Edit the SimpleCNN class (see Model Definition section) to adjust architecture.
 """
@@ -15,6 +14,8 @@ import torchvision
 import torchvision.transforms as transforms
 import matplotlib.pyplot as plt
 import numpy as np
+from time import gmtime, strftime
+from track_performance import ExperimentTracker
 
 # ================== Config & Hyperparameters ==================
 BATCH_SIZE = 64
@@ -28,6 +29,9 @@ NUM_WORKERS = 2
 np.random.seed(RANDOM_SEED)
 torch.manual_seed(RANDOM_SEED)
 torch.backends.cudnn.deterministic = True
+
+x = strftime("%H:%M:%S", gmtime())
+print("Start time: ", x)
 
 def get_data_loaders(batch_size: int = BATCH_SIZE, num_workers: int = NUM_WORKERS):
     transform = transforms.Compose([
@@ -63,22 +67,22 @@ class SimpleCNN(nn.Module):
     def __init__(self, num_classes: int = 10):
         super().__init__()
         self.conv_layers = nn.Sequential(
-            nn.Conv2d(3, 32, 3, padding=1),
+            nn.Conv2d(3, 16, 3, padding=1),
+            nn.BatchNorm2d(16),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+            nn.Conv2d(16, 32, 3, padding=1),
             nn.BatchNorm2d(32),
             nn.ReLU(),
             nn.MaxPool2d(2),
-            nn.Conv2d(32, 64, 3, padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU(),
-            nn.MaxPool2d(2),
-            nn.Conv2d(64, 128, 3, padding=1),
-            nn.BatchNorm2d(128),
+            nn.Conv2d(32, 32, 3, padding=1),
+            nn.BatchNorm2d(32),
             nn.ReLU(),
             nn.MaxPool2d(2)
         )
         self.classifier = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(128*4*4, 128),
+            nn.Linear(32*4*4, 128),
             nn.ReLU(),
             nn.Dropout(0.5),
             nn.Linear(128, num_classes)
@@ -95,10 +99,15 @@ def train(
     criterion,
     optimizer,
     epochs: int,
-    device: torch.device
+    device: torch.device,
+    tracker: ExperimentTracker = None
 ):
     train_losses, valid_losses = [], []
     best_val_acc = 0.0
+    
+    if tracker:
+        tracker.start_training()
+    
     for epoch in range(epochs):
         model.train()
         running_loss = 0.0
@@ -126,10 +135,19 @@ def train(
         avg_val_loss = val_loss / len(validloader.dataset)
         val_acc = 100. * correct / total
         valid_losses.append(avg_val_loss)
-        print(f"Epoch {epoch+1}/{epochs} - Train Loss: {avg_train_loss:.4f} - Val Loss: {avg_val_loss:.4f} - Val Acc: {val_acc:.2f}%")
+        
+        # Log to tracker
+        if tracker:
+            tracker.log_epoch(avg_train_loss, avg_val_loss)
+        
+        print(f"Epoch {epoch+1}/{epochs} - Train Loss: {avg_train_loss:.4f} - Val Loss: {avg_val_loss:.4f} - Val Acc: {val_acc:.2f}%, Current time: {strftime('%H:%M:%S', gmtime())}")
         if val_acc > best_val_acc:
             best_val_acc = val_acc
             torch.save(model.state_dict(), 'best_model.pth')
+    
+    if tracker:
+        tracker.end_training()
+    
     print('Finished Training')
     return train_losses, valid_losses
 
@@ -149,13 +167,34 @@ def test(model, testloader, device):
     return acc
 
 def main():
+    # Initialize experiment tracker
+    tracker = ExperimentTracker('classical', 'baseline_16_32_32_filters')
+    tracker.set_hyperparameters(
+        batch_size=BATCH_SIZE,
+        epochs=EPOCHS,
+        learning_rate=LEARNING_RATE,
+        optimizer='Adam',
+        architecture='16->32->32 filters',
+        device=str(DEVICE)
+    )
+    
     trainloader, validloader, testloader, classes = get_data_loaders()
     show_samples(trainloader, classes)
     model = SimpleCNN(num_classes=10).to(DEVICE)
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
-    train_losses, val_losses = train(model, trainloader, validloader, criterion, optimizer, EPOCHS, DEVICE)
+    
+    train_losses, val_losses = train(model, trainloader, validloader, criterion, optimizer, EPOCHS, DEVICE, tracker)
     acc = test(model, testloader, DEVICE)
+    
+    # Log final accuracy
+    tracker.set_test_accuracy(acc)
+    tracker.add_note(f"Architecture: 16->32->32 filters, smaller than original 32->64->128")
+    
+    # Save experiment
+    saved_path = tracker.save()
+    print(f"\n✓ Experiment results saved to: {saved_path}")
+    
     plt.figure()
     plt.plot(train_losses, label='Train Loss')
     plt.plot(val_losses, label='Validation Loss')
@@ -165,6 +204,7 @@ def main():
     plt.legend()
     plt.show()
     print(f"Final Test Accuracy: {acc:.2f}%")
+    print("End time: ", strftime("%H:%M:%S", gmtime()))
 
 if __name__ == '__main__':
     main()

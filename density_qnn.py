@@ -12,12 +12,13 @@ I = torch.eye(2)
 # "hamming weight preserving unitary"
 # "Reconfigurable beam splitter"
 def RBS(theta):
+    # ensure we use the same dtype as the global identity matrix `I` to avoid dtype mismatches
     return torch.tensor([
         [1,     0,          0,          0],
         [0, cos(theta), -sin(theta),    0],
         [0, sin(theta), cos(theta),     0],
         [0,     0,          0,          1]
-    ])
+    ], dtype=I.dtype)
 
 # random theta from 0 to 2pi
 def get_theta():

@@ -49,21 +49,18 @@ class QuantumCircuit:
         self.device = self._setup_device()
 
     def _setup_device(self):
-        os.environ['AWS_DEFAULT_REGION'] = "us-west-1"
-        os.environ['BRAKET_DEVICE'] = 'arn:aws:braket:us-west-1::device/qpu/rigetti/Ankaa-3'
         """Initialize a PennyLane device.
 
         If BRAKET_DEVICE is set in the environment, try to use the remote Braket device.
         Otherwise fall back to the local default.qubit simulator.
         """
         braket_arn = os.getenv('BRAKET_DEVICE', '').strip()
-        # braket_arn = "arn:aws:braket:us-west-1::device/qpu/rigetti/Ankaa-3"
+        
         if braket_arn:
             try:
                 dev = qml.device(
                     "braket.aws.qubit",
                     device_arn=braket_arn,
-                    # region='us-west-1'
                     wires=self.num_qubits,
                     shots=self.shots,
                 )
@@ -72,11 +69,11 @@ class QuantumCircuit:
             except Exception as e:
                 print(f"Warning: failed to initialize Braket device ({braket_arn}): {e}. Falling back to local simulator.")
 
-        # # Local simulator default. If shots is None, use analytic/statevector where available.
-        # if self.shots is None:
-        #     dev = qml.device("default.qubit", wires=self.num_qubits)
-        # else:
-        #     dev = qml.device("default.qubit", wires=self.num_qubits, shots=self.shots)
+        # Local simulator default. If shots is None, use analytic/statevector where available.
+        if self.shots is None:
+            dev = qml.device("default.qubit", wires=self.num_qubits)
+        else:
+            dev = qml.device("default.qubit", wires=self.num_qubits, shots=self.shots)
         print(f"Using local simulator: default.qubit (wires={self.num_qubits}, shots={self.shots})")
         return dev
 

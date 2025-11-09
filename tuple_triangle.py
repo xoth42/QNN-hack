@@ -25,7 +25,6 @@ def generate_inner_list(z):
             
     return inner_list
 
-
 def inverted_pyramid(n):
     """Gets tuples with the inverted pyramid entanglement algorythm"""
     output_list = []
@@ -88,7 +87,7 @@ def pyramid(n):
     return output_list
     
         
-print(pyramid(10))
+# print(pyramid(10))
 
 
 

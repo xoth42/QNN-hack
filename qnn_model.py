@@ -18,7 +18,9 @@ from typing import Optional
 import torch
 import torch.nn as nn
 import pennylane as qml
-
+from numpy import pi
+from density_qnn import density_layer
+from walsh_circuit_decomposition import build_optimal_walsh_circuit
 # Optional AWS helper dependencies
 try:
     import boto3
@@ -27,12 +29,13 @@ try:
 except Exception:
     _BOTO3_AVAILABLE = False
 
-
 class QuantumCircuit:
     """Quantum circuit definition for the hybrid model and small ping-layer generator."""
 
-    def __init__(self, num_qubits: int = 4, shots: Optional[int] = None):
+    def __init__(self, num_qubits: int = 7, shots: Optional[int] = 10,QNN_layers=10):
+        print(f"Init Quantum circuit, QNN_layers: {QNN_layers}, qubits: {num_qubits}")
         self.num_qubits = num_qubits
+        self.QNN_layers = QNN_layers
         # Allow override with env var BRAKET_SHOTS or default to None (analytic/statevector) for local
         env_shots = os.getenv('BRAKET_SHOTS')
         if env_shots is not None:
@@ -46,30 +49,34 @@ class QuantumCircuit:
         self.device = self._setup_device()
 
     def _setup_device(self):
+        os.environ['AWS_DEFAULT_REGION'] = "us-west-1"
+        os.environ['BRAKET_DEVICE'] = 'arn:aws:braket:us-west-1::device/qpu/rigetti/Ankaa-3'
         """Initialize a PennyLane device.
 
         If BRAKET_DEVICE is set in the environment, try to use the remote Braket device.
         Otherwise fall back to the local default.qubit simulator.
         """
         braket_arn = os.getenv('BRAKET_DEVICE', '').strip()
+        # braket_arn = "arn:aws:braket:us-west-1::device/qpu/rigetti/Ankaa-3"
         if braket_arn:
             try:
                 dev = qml.device(
                     "braket.aws.qubit",
                     device_arn=braket_arn,
+                    # region='us-west-1'
                     wires=self.num_qubits,
                     shots=self.shots,
                 )
-                print(f"Using remote Braket device: {braket_arn} (wires={self.num_qubits}, shots={self.shots})")
+                print(f"Successful! Using remote Braket device: {braket_arn} (wires={self.num_qubits}, shots={self.shots})")
                 return dev
             except Exception as e:
                 print(f"Warning: failed to initialize Braket device ({braket_arn}): {e}. Falling back to local simulator.")
 
-        # Local simulator default. If shots is None, use analytic/statevector where available.
-        if self.shots is None:
-            dev = qml.device("default.qubit", wires=self.num_qubits)
-        else:
-            dev = qml.device("default.qubit", wires=self.num_qubits, shots=self.shots)
+        # # Local simulator default. If shots is None, use analytic/statevector where available.
+        # if self.shots is None:
+        #     dev = qml.device("default.qubit", wires=self.num_qubits)
+        # else:
+        #     dev = qml.device("default.qubit", wires=self.num_qubits, shots=self.shots)
         print(f"Using local simulator: default.qubit (wires={self.num_qubits}, shots={self.shots})")
         return dev
 
@@ -78,97 +85,67 @@ class QuantumCircuit:
         """Return a callable QNode (quantum sub-circuit) 
         suitable for wrapping by TorchLayer."""
 
+        # prepare the quantum layer
+        quantum_layer = density_layer(self.num_qubits,self.QNN_layers)
+        
         @qml.qnode(self.device, interface="torch")
         def quantum_sub_circuit(inputs, weights):
-            # inputs shape: (num_qubits,), weights shape: (2*num_qubits,)
+            # inputs shape: (num_qubits,), 
+            # old version: weights shape: (2*num_qubits,)
+            # new version: weights shape: (self.QNN_layers,) - one weight per sub-unitary
+            
+            # Embed the incoming values from the CNN into quantum states
+            # set to Y(pi*xi/2) from literature
             for i in range(self.num_qubits):
-                qml.RY(inputs[i], wires=i)
-            for i in range(self.num_qubits):
-                qml.RZ(weights[i], wires=i)
-            for i in range(self.num_qubits - 1):
-                qml.CNOT(wires=[i, i + 1])
-            for i in range(self.num_qubits):
-                qml.RY(weights[i + self.num_qubits], wires=i)
+                qml.RY(inputs[i] * pi/2, wires=i)
+                
+            # Create the internal quantum layer from the weights
+            quantum_layer_decomp = quantum_layer(weights)
+            # Decompose to build optimal circuit to run 
+            quantum_layer_decomp = build_optimal_walsh_circuit(quantum_layer_decomp)
+            # interpret circuit output
+            for gate in quantum_layer_decomp:
+                if gate[0] == "CNOT":
+                    qml.CNOT(wires=gate[1])
+                elif gate[0] == "RZ":
+                    qml.RZ(gate[1][0],wires=gate[1][1]) # first is theta0, second is target
+                else:
+                    assert "Layer decomposition error"
+            # Measure outputs
             return [qml.expval(qml.PauliZ(i)) for i in range(self.num_qubits)]
 
         return quantum_sub_circuit
-
-    def ping_layer(self):
-        """Return a tiny TorchLayer used to estimate TorchLayer/device overhead.
-
-        The ping layer uses a 1-qubit tiny circuit. We create a device similar to the
-        chosen execution path (remote/local) but with a single wire so calls exercise
-        the same API / communication plumbing while keeping runtime minimal.
-        """
-        # Use a single-qubit device for ping; if BRAKET_DEVICE is set, try remote, else local
-        braket_arn = os.getenv('BRAKET_DEVICE', '').strip()
-        ping_shots = 2000
-        if braket_arn:
-            try:
-                ping_dev = qml.device("braket.aws.qubit", device_arn=braket_arn, wires=1, shots=ping_shots)
-            except Exception:
-                ping_dev = qml.device("default.qubit", wires=1, shots=ping_shots)
-        else:
-            ping_dev = qml.device("default.qubit", wires=1, shots=ping_shots)
-
-        @qml.qnode(ping_dev, interface="torch")
-        def ping_qnode(x, weights=None):
-            qml.RY(x[0], wires=0)
-            return qml.expval(qml.PauliZ(0))
-
-        # Wrap as TorchLayer (no trainable weights)
-        try:
-            return qml.qnn.TorchLayer(ping_qnode, {})
-        except Exception:
-            # In case the qnn API isn't available or fails, return a callable wrapper
-            def fallback(x):
-                return ping_qnode(x)
-
-            return fallback
 
 
 class HybridDensityQNN(nn.Module):
     """Hybrid CNN + Quantum Neural Network with comm-overhead estimation."""
 
-    def __init__(self, num_sub_unitaries: int = 2, num_qubits: int = 4):
+    def __init__(self, num_sub_unitaries: int = 10, num_qubits: int = 7):
         super(HybridDensityQNN, self).__init__()
         self.conv1 = nn.Conv2d(3, 8, 5)
         self.pool = nn.MaxPool2d(2, 2)
         self.conv2 = nn.Conv2d(8, 16, 5)
         self.fc1 = nn.Linear(16 * 5 * 5, num_qubits)
 
-        self.K = num_sub_unitaries
         self.num_qubits = num_qubits
 
         # Build main quantum circuit and TorchLayers
-        qc = QuantumCircuit(num_qubits=num_qubits)
+        qc = QuantumCircuit(num_qubits=num_qubits,QNN_layers=num_sub_unitaries)
         quantum_circuit = qc.circuit
-        self.quantum_layers = nn.ModuleList([
-            qml.qnn.TorchLayer(quantum_circuit, {"weights": (num_qubits * 2,)})
-            for _ in range(self.K)
-        ])
+        # start with 1 qnn-subunitarys layer (with num_sub_unitaries for amount of sub unitaries)
+        # https://docs.pennylane.ai/en/stable/code/api/pennylane.qnn.TorchLayer.html
+        self.qlayer = qml.qnn.TorchLayer(quantum_circuit, {"weights": num_sub_unitaries})
+           
 
-        self.alpha = nn.Parameter(torch.ones(self.K))
+        # self.quantum_layers = nn.ModuleList([
+        #     qml.qnn.TorchLayer(quantum_circuit, {"weights": (num_qubits * 2,)})
+        #     for _ in range(self.K)
+        # ])
+
+        # self.alpha = nn.Parameter(torch.ones(self.K))
+        # self.alpha = nn.Parameter(torch.ones(1)) # trying to stich the old version together
+
         self.fc2 = nn.Linear(num_qubits, 10)
-
-        # Estimate client-side/communication overhead using a tiny ping circuit
-        try:
-            ping_qc = QuantumCircuit(num_qubits=1)
-            ping_layer = ping_qc.ping_layer()
-            # Warm-up and measure a few times
-            dummy = torch.zeros(1)
-            runs = 5
-            times = []
-            for _ in range(runs):
-                t0 = time.time()
-                # call ping_layer; some fallbacks may be plain callables
-                _ = ping_layer(dummy)
-                times.append(time.time() - t0)
-            self._comm_overhead = float(sum(times) / len(times))
-            print(f"Estimated TorchLayer comm overhead per call: {self._comm_overhead:.4f}s")
-        except Exception as e:
-            self._comm_overhead = 0.0
-            print(f"Warning: ping overhead estimation failed: {e}; using comm_overhead=0")
 
     def forward(self, x):
         batch_size = x.shape[0]
@@ -176,46 +153,9 @@ class HybridDensityQNN(nn.Module):
         x = self.pool(torch.relu(self.conv2(x)))
         x = x.view(-1, 16 * 5 * 5)
         x = torch.tanh(self.fc1(x))
-
-        quantum_outputs = []
-        quantum_time_total = 0.0
-        comm_est_total = 0.0
-
-        for i in range(batch_size):
-            sample = x[i]
-            t0 = time.time()
-            circuit_outputs = [self.quantum_layers[k](sample) for k in range(self.K)]
-            call_time = time.time() - t0
-
-            # estimate device time by subtracting comm overhead (floor at 0)
-            comm_est = self._comm_overhead
-            device_time_est = max(0.0, call_time - comm_est)
-
-            quantum_time_total += call_time
-            comm_est_total += comm_est
-
-            alpha_norm = torch.softmax(self.alpha, dim=0)
-            weighted_out = sum(alpha_norm[k] * circuit_outputs[k] for k in range(self.K))
-            quantum_outputs.append(weighted_out)
-
-        quantum_out = torch.stack(quantum_outputs)
-        out = self.fc2(quantum_out)
-
-        # Diagnostic summary once per forward
-        try:
-            avg_call = quantum_time_total / batch_size
-            avg_device_est = (quantum_time_total - comm_est_total) / batch_size
-        except ZeroDivisionError:
-            avg_call = 0.0
-            avg_device_est = 0.0
-
-        print(
-            f"Hybrid forward: batch_size={batch_size}, total_call={quantum_time_total:.3f}s, "
-            f"avg_call={avg_call:.3f}s, est_device_total={(quantum_time_total - comm_est_total):.3f}s, "
-            f"est_device_avg={avg_device_est:.3f}s, est_comm_avg={self._comm_overhead:.3f}s",
-        )
-
-        return out
+        x = self.qlayer(x) # run the quantum layer
+        x = self.fc2(x)
+        return x
 
 
 def get_braket_task_metadata(quantum_task_arn: str, region: Optional[str] = None) -> dict:

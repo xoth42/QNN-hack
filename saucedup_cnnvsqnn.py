@@ -25,6 +25,7 @@ import json
 # Import our optimized models
 from cnn_model import PureCNN
 from qnn_model import HybridDensityQNN, QuantumCircuit
+load_dotenv()
 
 class ModelTrainer:
     """Efficient model trainer with performance tracking"""
@@ -219,7 +220,7 @@ class ExperimentRunner:
     def _setup_models(self):
         """Initialize models with trainers"""
         self.cnn_model = PureCNN()
-        self.hybrid_model = HybridDensityQNN(num_sub_unitaries=2, num_qubits=10)
+        self.hybrid_model = HybridDensityQNN(num_sub_unitaries=2, num_qubits=7)
         
         self.cnn_trainer = ModelTrainer(self.cnn_model, "Pure CNN", self.device)
         self.hybrid_trainer = ModelTrainer(self.hybrid_model, "Hybrid QNN", self.device)

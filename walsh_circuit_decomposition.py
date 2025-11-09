@@ -25,6 +25,8 @@ def _fwht(vec: np.ndarray) -> np.ndarray:
     return y
 
 def Walsh_coefficients(matrix: np.ndarray) -> np.ndarray:
+    # fix for err (RuntimeError: Can't call numpy() on Tensor that requires grad. Use tensor.detach().numpy() instead.)
+    matrix = matrix.detach().numpy()
     assert matrix.ndim == 2 and matrix.shape[0] == matrix.shape[1]
     N = matrix.shape[0]
     assert N & (N-1) == 0 and N > 0

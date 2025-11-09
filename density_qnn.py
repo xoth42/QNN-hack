@@ -112,17 +112,10 @@ def upsidown_pyramid_network_rbs(qubits) :
 # If there are sufficiently enough internal matrixies, and enough training, one or more will be 'selected' and it their weights will be increased, speeding up training and gradient decent.
 # will return a function which makes the layer based on the 'alphas'
 def density_layer(qubits,matrix_count):
-    # Create empty n by n matrix 
-    U = torch.tensor(
-        [
-            [0 for _ in range(qubits)] for _ in range(qubits)
-        ]
-    )
-
     print(f"Init density layer, qubits: {qubits}")
-    get_one_rbs_network = lambda :  pyramid_network_rbs(qubits) if random() > .5 else upsidown_pyramid_network_rbs(qubits)
-    
-    # get_one_rbs_network = lambda : upsidown_pyramid_network_rbs(qubits)
+    # get_one_rbs_network = lambda :  pyramid_network_rbs(qubits) if random() > .5 else upsidown_pyramid_network_rbs(qubits)
+    get_one_rbs_network = lambda :  upsidown_pyramid_network_rbs(qubits)
+
 
     # the list of internal RBS matricies, not weighted
     RBS_networks = [

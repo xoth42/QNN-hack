@@ -1,4 +1,8 @@
 """Visualize the entanglement patterns"""
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from tuple_triangle import inverted_pyramid, pyramid
 
 def visualize_pattern(pattern_name, pattern_func, n):

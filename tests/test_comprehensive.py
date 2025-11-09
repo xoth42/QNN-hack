@@ -2,6 +2,10 @@
 Comprehensive tests for Walsh decomposition and Density QNN
 """
 
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import numpy as np
 import torch
 from walsh_circuit_decomposition import (

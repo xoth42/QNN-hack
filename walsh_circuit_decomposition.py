@@ -26,23 +26,77 @@ def _fwht(vec: np.ndarray) -> np.ndarray:
     return y
 
 def Walsh_coefficients(matrix: np.ndarray) -> np.ndarray:
-    # fix for err (RuntimeError: Can't call numpy() on Tensor that requires grad. Use tensor.detach().numpy() instead.)
-    try:
-        if isinstance(matrix, torch.Tensor):
-            matrix = matrix.detach().numpy()
-    except Exception:
-        pass
-    assert matrix.ndim == 2 and matrix.shape[0] == matrix.shape[1]
-    N = matrix.shape[0]
-    assert N & (N-1) == 0 and N > 0
+    """
+    Compute Walsh coefficients for a diagonal unitary matrix.
     
+    Args:
+        matrix: Diagonal unitary matrix (can be torch.Tensor or numpy array)
+        
+    Returns:
+        Walsh coefficients as numpy array
+        
+    Raises:
+        AssertionError: If matrix is not diagonal or elements not on unit circle
+    """
+    # fix for err (RuntimeError: Can't call numpy() on Tensor that requires grad. Use tensor.detach().numpy() instead.)
+    if hasattr(matrix, 'detach'):
+        matrix = matrix.detach().numpy()
+    elif not isinstance(matrix, np.ndarray):
+        matrix = np.array(matrix)
+    
+    # Check matrix is square
+    assert matrix.ndim == 2 and matrix.shape[0] == matrix.shape[1], \
+        f"Matrix must be square, got shape {matrix.shape}"
+    
+    N = matrix.shape[0]
+    
+    # Check N is power of 2
+    assert N & (N-1) == 0 and N > 0, \
+        f"Matrix size must be power of 2, got {N}"
+    
+    # Extract diagonal
     d = np.diag(matrix)
-    # assert np.allclose(matrix, np.diag(d))
-    # assert np.allclose(np.abs(d), 1.0, atol=1e-12)
+    
+    # Check if matrix is diagonal
+    assert np.allclose(matrix, np.diag(d), atol=1e-10), \
+        "Walsh decomposition requires a DIAGONAL matrix"
+    
+    # Check diagonal elements are on unit circle
+    assert np.allclose(np.abs(d), 1.0, atol=1e-12), \
+        "All diagonal elements must have magnitude 1 (be on unit circle)"
 
+    # Compute Walsh coefficients
     f = np.angle(d)   
     a = _fwht(f) / N
     return a
+
+
+def diagonalize_unitary(matrix: np.ndarray) -> tuple:
+    """
+    Diagonalize a unitary matrix.
+    
+    Args:
+        matrix: Unitary matrix to diagonalize
+        
+    Returns:
+        Tuple of (diagonal_matrix, transformation_matrix)
+        where: matrix = transformation @ diagonal_matrix @ transformation.conj().T
+    """
+    if hasattr(matrix, 'detach'):
+        matrix = matrix.detach().numpy()
+    elif not isinstance(matrix, np.ndarray):
+        matrix = np.array(matrix)
+    
+    # Check if already diagonal
+    d = np.diag(matrix)
+    if np.allclose(matrix, np.diag(d), atol=1e-10):
+        return matrix, np.eye(matrix.shape[0])
+    
+    # Diagonalize using eigenvalue decomposition
+    eigenvalues, eigenvectors = np.linalg.eig(matrix)
+    diagonal_matrix = np.diag(eigenvalues)
+    
+    return diagonal_matrix, eigenvectors
 
 
 EPS = 1e-12        # ignore small rotations

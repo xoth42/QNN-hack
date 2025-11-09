@@ -2,6 +2,10 @@
 Final verification script - Quick sanity checks
 """
 
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import numpy as np
 import torch
 from walsh_circuit_decomposition import build_optimal_walsh_circuit, Walsh_coefficients

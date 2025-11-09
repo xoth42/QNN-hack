@@ -2,22 +2,11 @@
 """
 Created on Sun Nov  9 03:34:28 2025
 
-@author: Owner
+@author: Lydia_Blackwell_Esslami
 """
 
-def make_tups(n):
-    # output_list = []
-    # for x in range(1,n):
-    #     inner_list = []
-    #     inner_list.append((x, x+1))
-    #     if x>2:
-    #         inner_list.append((x+1,x+2))
-    #     if x>4:
-    #         inner_list.append((x+2, x+3))
-    #     if x>6:
-    #         inner_list.append((x+3,x+4))
-            
-    #     output_list.append(inner_list)
+def inverted_pyramid(n):
+    """Gets tuples with the inverted pyramid entanglement algorythm"""
     output_list = []
     for x in range(1,n):
         inner_list = []

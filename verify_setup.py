@@ -147,7 +147,7 @@ def verify_classical_model():
         return False
 
 def verify_quantum_model():
-    """Test 4: Verify quantum hybrid CNN can be created"""
+    """Test 4: Verify quantum hybrid CNN forward pass (local simulator)"""
     print_test("Quantum CNN Test", "running")
     
     try:
@@ -168,11 +168,20 @@ def verify_quantum_model():
         model = QuantumHybridCNN(n_qubits=4, n_quantum_layers=2, use_local=True)
         model.eval()
         
+        # Create dummy input
+        dummy_input = torch.randn(2, 3, 32, 32)  # Small batch for speed
+        
+        # Forward pass
+        with torch.no_grad():
+            output = model(dummy_input)
+        
+        assert output.shape == torch.Size([2, 10]), f"Unexpected output shape: {output.shape}"
+        
         # Count parameters
         total_params = sum(p.numel() for p in model.parameters())
         
         print_test("Quantum CNN Test", "pass", 
-                  f"Model created successfully, Parameters: {total_params:,}, Qubits: 4")
+                  f"Forward pass successful, Output: {list(output.shape)}, Parameters: {total_params:,}")
         return True
     except Exception as e:
         print_test("Quantum CNN Test", "fail", str(e))

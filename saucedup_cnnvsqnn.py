@@ -219,7 +219,7 @@ class ExperimentRunner:
     def _setup_models(self):
         """Initialize models with trainers"""
         self.cnn_model = PureCNN()
-        self.hybrid_model = HybridDensityQNN(num_sub_unitaries=2)
+        self.hybrid_model = HybridDensityQNN(num_sub_unitaries=2, num_qubits=10)
         
         self.cnn_trainer = ModelTrainer(self.cnn_model, "Pure CNN", self.device)
         self.hybrid_trainer = ModelTrainer(self.hybrid_model, "Hybrid QNN", self.device)

@@ -1,0 +1,27 @@
+{
+  "date": "2025-11-09",
+  "model_type": "quantum",
+  "description": "4qubits_2layers_local",
+  "hyperparameters": {
+    "batch_size": 4,
+    "epochs": 1,
+    "learning_rate": 0.001,
+    "quantum_qubits": 4,
+    "quantum_layers": 2,
+    "optimizer": "Adam",
+    "quantum_simulator": "local",
+    "architecture": "16->32->32 filters (matching classical)"
+  },
+  "results": {
+    "train_loss": [
+      2.0030647439108953
+    ],
+    "val_loss": [
+      1.837423340320587
+    ],
+    "test_accuracy": 27.28,
+    "training_time_seconds": 2032.5966086387634,
+    "inference_time_ms": 0.0
+  },
+  "notes": "Quantum hybrid CNN with 4 qubits using local\n"
+}

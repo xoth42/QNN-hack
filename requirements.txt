@@ -1,0 +1,16 @@
+# Core dependencies for Quantum CNN Comparison Project
+torch>=2.0.0
+torchvision>=0.15.0
+numpy>=1.24.0
+matplotlib>=3.7.0
+
+# Quantum computing (local simulator)
+pennylane>=0.33.0
+
+# Utilities
+tqdm>=4.65.0
+scipy>=1.10.0
+
+# Optional: AWS Braket (install separately if needed)
+# pennylane-braket>=0.33.0
+# amazon-braket-sdk>=1.50.0

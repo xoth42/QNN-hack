@@ -45,6 +45,35 @@ def Walsh_coefficients(matrix: np.ndarray) -> np.ndarray:
     return a
 
 
+def diagonalize_unitary(matrix):
+    """
+    Diagonalize a unitary matrix.
+    
+    Args:
+        matrix: Unitary matrix to diagonalize (can be torch.Tensor or numpy array)
+        
+    Returns:
+        Tuple of (diagonal_matrix, transformation_matrix)
+        where: matrix = transformation @ diagonal_matrix @ transformation.conj().T
+    """
+    # Convert to numpy if needed
+    if hasattr(matrix, 'detach'):
+        matrix = matrix.detach().numpy()
+    elif not isinstance(matrix, np.ndarray):
+        matrix = np.array(matrix)
+    
+    # Check if already diagonal
+    d = np.diag(matrix)
+    if np.allclose(matrix, np.diag(d), atol=1e-10):
+        return matrix, np.eye(matrix.shape[0])
+    
+    # Diagonalize using eigenvalue decomposition
+    eigenvalues, eigenvectors = np.linalg.eig(matrix)
+    diagonal_matrix = np.diag(eigenvalues)
+    
+    return diagonal_matrix, eigenvectors
+
+
 EPS = 1e-12        # ignore small rotations
 # replace qiskit with pennylane backend
 def build_optimal_walsh_circuit(matrix):

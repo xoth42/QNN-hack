@@ -1,13 +1,10 @@
 # qnn_model.py
 import torch
-# qnn_model.py
 """Quantum models and helpers for the hybrid experiment.
 
 Features:
 - QuantumCircuit: creates a PennyLane device (Braket if BRAKET_DEVICE set, otherwise local simulator)
-- ping_layer: small TorchLayer used to estimate client-side/communication overhead
-- HybridDensityQNN: hybrid CNN + quantum network that estimates comm overhead and reports
-  estimated device execution time (T_call - T_comm)
+- HybridDensityQNN: hybrid CNN + quantum network with density matrix approach
 - get_braket_task_metadata: optional helper to fetch Braket quantum task metadata via boto3
 """
 
@@ -20,7 +17,8 @@ import torch.nn as nn
 import pennylane as qml
 from numpy import pi
 from density_qnn import density_layer
-from walsh_circuit_decomposition import build_optimal_walsh_circuit
+from walsh_circuit_decomposition import build_optimal_walsh_circuit, diagonalize_unitary
+
 # Optional AWS helper dependencies
 try:
     import boto3
@@ -29,14 +27,16 @@ try:
 except Exception:
     _BOTO3_AVAILABLE = False
 
-class QuantumCircuit:
-    """Quantum circuit definition for the hybrid model and small ping-layer generator."""
 
-    def __init__(self, num_qubits: int = 7, shots: Optional[int] = 10,QNN_layers=10):
-        print(f"Init Quantum circuit, QNN_layers: {QNN_layers}")
+class QuantumCircuit:
+    """Quantum circuit definition for the hybrid model."""
+
+    def __init__(self, num_qubits: int = 7, shots: Optional[int] = None, QNN_layers=10):
+        print(f"Init Quantum circuit, QNN_layers: {QNN_layers}, qubits: {num_qubits}")
         self.num_qubits = num_qubits
         self.QNN_layers = QNN_layers
-        # Allow override with env var BRAKET_SHOTS or default to None (analytic/statevector) for local
+        
+        # Allow override with env var BRAKET_SHOTS
         env_shots = os.getenv('BRAKET_SHOTS')
         if env_shots is not None:
             try:
@@ -49,21 +49,18 @@ class QuantumCircuit:
         self.device = self._setup_device()
 
     def _setup_device(self):
-        os.environ['AWS_DEFAULT_REGION'] = "us-west-1"
-        os.environ['BRAKET_DEVICE'] = 'arn:aws:braket:us-west-1::device/qpu/rigetti/Ankaa-3'
         """Initialize a PennyLane device.
 
         If BRAKET_DEVICE is set in the environment, try to use the remote Braket device.
         Otherwise fall back to the local default.qubit simulator.
         """
         braket_arn = os.getenv('BRAKET_DEVICE', '').strip()
-        # braket_arn = "arn:aws:braket:us-west-1::device/qpu/rigetti/Ankaa-3"
+        
         if braket_arn:
             try:
                 dev = qml.device(
                     "braket.aws.qubit",
                     device_arn=braket_arn,
-                    # region='us-west-1'
                     wires=self.num_qubits,
                     shots=self.shots,
                 )
@@ -72,88 +69,142 @@ class QuantumCircuit:
             except Exception as e:
                 print(f"Warning: failed to initialize Braket device ({braket_arn}): {e}. Falling back to local simulator.")
 
-        # # Local simulator default. If shots is None, use analytic/statevector where available.
-        # if self.shots is None:
-        #     dev = qml.device("default.qubit", wires=self.num_qubits)
-        # else:
-        #     dev = qml.device("default.qubit", wires=self.num_qubits, shots=self.shots)
+        # Local simulator default
+        if self.shots is None:
+            dev = qml.device("default.qubit", wires=self.num_qubits)
+        else:
+            dev = qml.device("default.qubit", wires=self.num_qubits, shots=self.shots)
         print(f"Using local simulator: default.qubit (wires={self.num_qubits}, shots={self.shots})")
         return dev
 
     @property
     def circuit(self):
-        """Return a callable QNode (quantum sub-circuit) 
-        suitable for wrapping by TorchLayer."""
+        """Return a callable QNode (quantum sub-circuit) suitable for wrapping by TorchLayer."""
 
-        # prepare the quantum layer
-        quantum_layer = density_layer(self.num_qubits,self.QNN_layers)
+        # Prepare the density quantum layer with all 4 paper patterns (Figure 9)
+        # This uses: pyramid, X-circuit, butterfly, and round-robin
+        quantum_layer = density_layer(
+            self.num_qubits, 
+            self.QNN_layers,
+            patterns=None  # Uses all 4 paper patterns by default
+        )
         
         @qml.qnode(self.device, interface="torch")
         def quantum_sub_circuit(inputs, weights):
-            # inputs shape: (num_qubits,), 
-            # old version: weights shape: (2*num_qubits,)
-            # new version: weights shape: (self.QNN_layers,) - one weight per sub-unitary
+            """
+            Density matrix quantum circuit with proper diagonalization.
             
-            # Embed the incoming values from the CNN into quantum states
-            # set to Y(pi*xi/2) from literature
+            This implements the full density QNN approach:
+            1. Encode classical data into quantum state
+            2. Create density matrix from weighted RBS networks
+            3. Diagonalize the density matrix
+            4. Apply using Walsh decomposition
+            
+            Args:
+                inputs: shape (num_qubits,) - feature vector from CNN
+                weights: shape (QNN_layers,) - mixing coefficients for density matrices
+            
+            Returns:
+                List of expectation values, one per qubit
+            """
+            # Step 1: Data encoding - embed CNN features into quantum states
+            # Using amplitude encoding with RY rotations
             for i in range(self.num_qubits):
                 qml.RY(inputs[i] * pi/2, wires=i)
-                
-            # Create the internal quantum layer from the weights
-            quantum_layer_decomp = quantum_layer(weights)
-            # Decompose to build optimal circuit to run 
-            quantum_layer_decomp = build_optimal_walsh_circuit(quantum_layer_decomp)
-            # interpret circuit output
-            for gate in quantum_layer_decomp:
+            
+            # Step 2: Create density matrix from weighted sum of RBS networks
+            density_matrix = quantum_layer(weights)
+            
+            # Step 3: Diagonalize the density matrix
+            # This gives us: density_matrix = U @ D @ U†
+            # where D is diagonal and U is the transformation
+            diag_matrix, transform_matrix = diagonalize_unitary(density_matrix)
+            
+            # Step 4: Apply the unitary transformation
+            # We need to apply: U @ D @ U†
+            
+            # 4a: Apply U (transformation to diagonal basis)
+            transform_circuit = build_optimal_walsh_circuit(torch.tensor(transform_matrix, dtype=torch.complex64))
+            for gate in transform_circuit:
                 if gate[0] == "CNOT":
                     qml.CNOT(wires=gate[1])
                 elif gate[0] == "RZ":
-                    qml.RZ(gate[1][0],wires=gate[1][1]) # first is theta0, second is target
-                else:
-                    assert "Layer decomposition error"
-            # Measure outputs
+                    qml.RZ(gate[1][0], wires=gate[1][1])
+            
+            # 4b: Apply D (diagonal unitary using Walsh decomposition)
+            diag_circuit = build_optimal_walsh_circuit(diag_matrix)
+            for gate in diag_circuit:
+                if gate[0] == "CNOT":
+                    qml.CNOT(wires=gate[1])
+                elif gate[0] == "RZ":
+                    qml.RZ(gate[1][0], wires=gate[1][1])
+            
+            # 4c: Apply U† (inverse transformation)
+            for gate in reversed(transform_circuit):
+                if gate[0] == "CNOT":
+                    qml.CNOT(wires=gate[1])  # CNOT is self-inverse
+                elif gate[0] == "RZ":
+                    qml.RZ(-gate[1][0], wires=gate[1][1])  # Inverse rotation
+            
+            # Step 5: Measurement
             return [qml.expval(qml.PauliZ(i)) for i in range(self.num_qubits)]
 
         return quantum_sub_circuit
 
 
 class HybridDensityQNN(nn.Module):
-    """Hybrid CNN + Quantum Neural Network with comm-overhead estimation."""
+    """Hybrid CNN + Quantum Neural Network using density matrix approach."""
 
     def __init__(self, num_sub_unitaries: int = 10, num_qubits: int = 7):
         super(HybridDensityQNN, self).__init__()
+        
+        # CNN feature extractor
         self.conv1 = nn.Conv2d(3, 8, 5)
         self.pool = nn.MaxPool2d(2, 2)
         self.conv2 = nn.Conv2d(8, 16, 5)
         self.fc1 = nn.Linear(16 * 5 * 5, num_qubits)
 
         self.num_qubits = num_qubits
+        self.num_sub_unitaries = num_sub_unitaries
 
-        # Build main quantum circuit and TorchLayers
-        qc = QuantumCircuit(num_qubits=num_qubits,QNN_layers=num_sub_unitaries)
-        quantum_circuit = qc.circuit
-        # start with 1 qnn-subunitarys layer (with num_sub_unitaries for amount of sub unitaries)
-        # https://docs.pennylane.ai/en/stable/code/api/pennylane.qnn.TorchLayer.html
-        self.qlayer = qml.qnn.TorchLayer(quantum_circuit, {"weights": num_sub_unitaries})
-           
+        # Build quantum circuit
+        qc = QuantumCircuit(num_qubits=num_qubits, QNN_layers=num_sub_unitaries, shots=None)
+        self.quantum_circuit = qc.circuit
+        
+        # Create trainable weights for quantum layer
+        self.quantum_weights = torch.nn.Parameter(torch.randn(num_sub_unitaries) * 0.1)
 
-        # self.quantum_layers = nn.ModuleList([
-        #     qml.qnn.TorchLayer(quantum_circuit, {"weights": (num_qubits * 2,)})
-        #     for _ in range(self.K)
-        # ])
-
-        # self.alpha = nn.Parameter(torch.ones(self.K))
-        # self.alpha = nn.Parameter(torch.ones(1)) # trying to stich the old version together
-
+        # Final classifier
         self.fc2 = nn.Linear(num_qubits, 10)
 
     def forward(self, x):
+        """
+        Forward pass through hybrid CNN-QNN.
+        
+        Args:
+            x: Input tensor of shape (batch_size, 3, 32, 32)
+            
+        Returns:
+            Output logits of shape (batch_size, 10)
+        """
         batch_size = x.shape[0]
+        
+        # CNN feature extraction
         x = self.pool(torch.relu(self.conv1(x)))
         x = self.pool(torch.relu(self.conv2(x)))
         x = x.view(-1, 16 * 5 * 5)
-        x = torch.tanh(self.fc1(x))
-        x = self.qlayer(x) # run the quantum layer
+        x = torch.tanh(self.fc1(x))  # Shape: (batch_size, num_qubits)
+        
+        # Quantum layer: process each sample individually
+        quantum_outputs = []
+        for i in range(batch_size):
+            sample = x[i]  # Shape: (num_qubits,)
+            qout = self.quantum_circuit(sample, self.quantum_weights)
+            quantum_outputs.append(torch.stack(qout).float())  # Ensure float32
+        
+        x = torch.stack(quantum_outputs)  # Shape: (batch_size, num_qubits)
+        
+        # Final classification
         x = self.fc2(x)
         return x
 
@@ -194,20 +245,16 @@ def get_braket_task_metadata(quantum_task_arn: str, region: Optional[str] = None
     # Try to compute execution durations if timestamp fields are present
     def _parse_iso(ts):
         try:
-            # boto3 returns datetimes as datetime objects in many cases; handle both
             if ts is None:
                 return None
             if isinstance(ts, str):
-                # Attempt ISO parse
                 from datetime import datetime
-
                 return datetime.fromisoformat(ts.replace('Z', '+00:00'))
             return ts
         except Exception:
             return None
 
     parsed = {}
-    # Common fields that may exist: 'createdAt', 'startedAt', 'endedAt', 'deviceExecutionStartTime', 'deviceExecutionEndTime'
     for k in ['createdAt', 'startedAt', 'endedAt', 'deviceExecutionStartTime', 'deviceExecutionEndTime']:
         if k in resp:
             parsed[k] = _parse_iso(resp.get(k))
@@ -221,8 +268,6 @@ def get_braket_task_metadata(quantum_task_arn: str, region: Optional[str] = None
         elif 'startedAt' in parsed and 'endedAt' in parsed:
             parsed['total_runtime_seconds'] = (parsed['endedAt'] - parsed['startedAt']).total_seconds()
     except Exception:
-        # Ignore computation errors
         pass
 
-    # Return both raw response and parsed times for convenience
     return {'raw': resp, 'parsed_times': parsed}

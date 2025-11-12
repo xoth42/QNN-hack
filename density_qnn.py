@@ -7,18 +7,27 @@ from torch import kron
 from functools import reduce
 twopi: float = 2 * pi # my computational physics teacher told me do this
 
-I = torch.eye(2)
-# TODO TESTS FOR THIS SHYTTE
+I = torch.eye(2, dtype=torch.float32)
 # "hamming weight preserving unitary"
 # "Reconfigurable beam splitter"
 def RBS(theta):
-    # ensure we use the same dtype as the global identity matrix `I` to avoid dtype mismatches
+    """
+    Reconfigurable Beam Splitter gate.
+    
+    Args:
+        theta: Rotation angle
+        
+    Returns:
+        4x4 RBS unitary matrix
+    """
+    c = float(cos(theta))
+    s = float(sin(theta))
     return torch.tensor([
-        [1,     0,          0,          0],
-        [0, cos(theta), -sin(theta),    0],
-        [0, sin(theta), cos(theta),     0],
-        [0,     0,          0,          1]
-    ], dtype=I.dtype)
+        [1.0,  0.0,  0.0, 0.0],
+        [0.0,    c,   -s, 0.0],
+        [0.0,    s,    c, 0.0],
+        [0.0,  0.0,  0.0, 1.0]
+    ], dtype=torch.float32)
 
 # random theta from 0 to 2pi
 def get_theta():
@@ -31,31 +40,58 @@ def RandRBS():
  
  
 def matrix_from_IRBS_string(string):
-    l = len(string)
-    assert l > 0
+    """
+    Convert a string of 'I' and 'RBS' tokens to a matrix.
     
-    matrix = I
-    #first
+    String format: 'I' for identity, 'RBS' for random beam splitter
+    Example: 'IRBS' = I ⊗ RBS (2 qubits)
+             'IRBSIRBS' = I ⊗ RBS ⊗ I ⊗ RBS (4 qubits)
+    
+    Args:
+        string: String containing 'I' and 'RBS' tokens
+        
+    Returns:
+        Tensor product of gates
+    """
+    if not string:
+        raise ValueError("String cannot be empty")
+    
+    # Parse string into tokens
+    tokens = []
     i = 0
-    if string[i] == 'I':
-        matrix = I
-    elif string[i] == 'R':
-        matrix= RandRBS()
-    
-    i += 1
-
-    while i < l:
-        if string[i] == 'I':
-            matrix = torch.kron(matrix,I)
+    while i < len(string):
+        if string[i:i+3] == 'RBS':
+            tokens.append('RBS')
+            i += 3
+        elif string[i] == 'I':
+            tokens.append('I')
             i += 1
-        elif string[i] == 'R':
-            matrix= torch.kron(matrix,RandRBS())
-            i += 1
-        elif (string[i] == 'B') or  (string[i] == 'S'):
+        elif string[i] in ['B', 'S']:
+            # Skip B and S if they appear separately (legacy parsing)
             i += 1
         else:
-            # invalid string creation
-            assert False
+            raise ValueError(f"Invalid character '{string[i]}' at position {i}")
+    
+    if not tokens:
+        raise ValueError("No valid tokens found in string")
+    
+    # Build matrix from tokens
+    if tokens[0] == 'I':
+        matrix = I
+    elif tokens[0] == 'RBS':
+        matrix = RandRBS()
+    else:
+        raise ValueError(f"Invalid first token: {tokens[0]}")
+    
+    # Process remaining tokens
+    for token in tokens[1:]:
+        if token == 'I':
+            matrix = torch.kron(matrix, I)
+        elif token == 'RBS':
+            matrix = torch.kron(matrix, RandRBS())
+        else:
+            raise ValueError(f"Invalid token: {token}")
+    
     return matrix
 
  
@@ -67,21 +103,62 @@ def matrix_from_IRBS_string(string):
 #     return matrix_from_IRBS_string(string)
     # RBS connections should look like: ((1,2)) or ((1,2),(3,4)), ...
 # Tuple of tuples
-# qubits is the total number of qubits, rbs tuples should not go past the num qubits
-# When calling the RBS gate, we will asign a random theta. Since it should not change anywhere else, this is fine.
-def string_from_RBS_connections(RBS_tuples: tuple,qubits):
-    i = 0
-    l = len(RBS_tuples)
-    total_str = ""
-    position = 1
-    while i < l:
-        this_tuple = RBS_tuples[i]
-        num = this_tuple[0]
-        total_str = total_str + "I"*(num-position) + "RBS"
-        position = num + 2 # the position of tensors we have done
-        i += 1 # read each pair (we will ignore the second number for now, only do local connections between adjacent qubits, todo add nonadjacent connections)
-    total_str = total_str + "I"*(qubits+1-position)
-    return total_str
+def string_from_RBS_connections(RBS_tuples, qubits):
+    """
+    Convert RBS connection tuples to a string representation.
+    
+    RBS gates in the same layer act SIMULTANEOUSLY (in parallel), not sequentially.
+    We need to build a tensor product of all gates acting at once.
+    
+    Args:
+        RBS_tuples: List of tuples indicating which qubits are connected
+                   e.g., [(1,2), (3,4)] means RBS on qubits 1-2 AND 3-4 simultaneously
+        qubits: Total number of qubits
+        
+    Returns:
+        String with 'I' for identity and 'RBS' for beam splitter
+        
+    Example:
+        [(1,2)] with 4 qubits -> "RBSII" (RBS on 1-2, I on 3, I on 4)
+        [(1,2), (3,4)] with 4 qubits -> "RBSRBS" (RBS on 1-2, RBS on 3-4, both at once)
+        [(3,4), (1,2)] with 4 qubits -> "RBSRBS" (same as above, order doesn't matter for parallel gates)
+    """
+    if not RBS_tuples:
+        # No connections, all identities
+        return "I" * qubits
+    
+    # Create a map of which qubits are covered by RBS gates
+    # qubit_map[i] = 'RBS_start' if qubit i is the start of an RBS
+    # qubit_map[i] = 'RBS_end' if qubit i is the end of an RBS
+    # qubit_map[i] = 'I' if qubit i has identity
+    qubit_map = ['I'] * (qubits + 1)  # 1-indexed, so need qubits+1
+    
+    for connection in RBS_tuples:
+        qubit_start = connection[0]
+        qubit_end = connection[1]
+        
+        # Mark these qubits as part of an RBS
+        qubit_map[qubit_start] = 'RBS_start'
+        qubit_map[qubit_end] = 'RBS_end'
+    
+    # Build string from qubit map
+    gates = []
+    i = 1  # Start from qubit 1 (1-indexed)
+    while i <= qubits:
+        if qubit_map[i] == 'RBS_start':
+            gates.append('RBS')
+            i += 2  # RBS covers 2 qubits
+        elif qubit_map[i] == 'I':
+            gates.append('I')
+            i += 1
+        elif qubit_map[i] == 'RBS_end':
+            # This shouldn't happen if RBS gates are properly formed
+            # Skip this qubit as it's part of a previous RBS
+            i += 1
+        else:
+            i += 1
+    
+    return ''.join(gates)
 
 
 def pyramid_network_rbs(qubits) :
@@ -96,7 +173,7 @@ def pyramid_network_rbs(qubits) :
 
 def upsidown_pyramid_network_rbs(qubits) :
     tuples_list = inverted_pyramid(qubits)
-    string: Unknown = string_from_RBS_connections(tuples_list[0],qubits)
+    string = string_from_RBS_connections(tuples_list[0],qubits)
 
     matrix = matrix_from_IRBS_string(string)
     for i in range(1,len(tuples_list)):
@@ -136,4 +213,3 @@ def density_layer(qubits,matrix_count):
     return density_layer_function
     
 # Decompose non-unitary into circuit
-

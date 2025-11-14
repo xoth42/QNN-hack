@@ -74,9 +74,92 @@ def diagonalize_unitary(matrix):
     return diagonal_matrix, eigenvectors
 
 
+def _is_diagonal(matrix, tol=1e-10):
+    """
+    Check if a matrix has only diagonal elements (all off-diagonal elements are zero).
+    
+    Args:
+        matrix: Input matrix to check (can be torch.Tensor or numpy array)
+        tol: Tolerance for considering off-diagonal elements as zero
+    
+    Returns:
+        bool: True if matrix is diagonal within tolerance
+    """
+    # Convert to numpy if torch tensor
+    if isinstance(matrix, torch.Tensor):
+        matrix = matrix.detach().cpu().numpy()
+    
+    # Get matrix dimensions
+    n, m = matrix.shape
+    
+    # Matrix must be square
+    if n != m:
+        return False
+    
+    # Check all off-diagonal elements
+    for i in range(n):
+        for j in range(m):
+            if i != j:
+                if np.abs(matrix[i, j]) > tol:
+                    return False
+    
+    return True
+
+
 EPS = 1e-12        # ignore small rotations
 # replace qiskit with pennylane backend
 def build_optimal_walsh_circuit(matrix):
+    """
+    Build Walsh circuit for DIAGONAL unitary matrices only.
+    
+    The Walsh decomposition algorithm is specifically designed for diagonal unitary
+    matrices and will produce incorrect results for non-diagonal matrices. This
+    function uses the Fast Walsh-Hadamard Transform (FWHT) to compute optimal
+    decomposition into CNOT and RZ gates.
+    
+    Mathematical Background:
+        For a diagonal unitary matrix D = diag(e^(iφ₀), e^(iφ₁), ..., e^(iφₙ)),
+        Walsh decomposition finds coefficients aⱼ such that:
+            φₖ = Σⱼ aⱼ · wⱼ(k)
+        where wⱼ(k) are Walsh functions. The circuit implements these rotations
+        using Gray code ordering to minimize CNOT gates.
+    
+    Args:
+        matrix: DIAGONAL unitary matrix (2^n × 2^n) where all off-diagonal
+                elements are zero. Can be torch.Tensor or numpy array.
+    
+    Returns:
+        List of (gate_type, params) tuples:
+            - ("CNOT", [control, target]): CNOT gate
+            - ("RZ", [angle, qubit]): RZ rotation gate
+    
+    Raises:
+        ValueError: If matrix is not diagonal. Walsh decomposition only works
+                   for diagonal matrices. Use decompose_unitary_matrix() from
+                   unitary_decomposition.py for non-diagonal matrices.
+    
+    Examples:
+        >>> # Diagonal matrix - works correctly
+        >>> diag_matrix = np.diag([1, -1, 1j, -1j])
+        >>> gates = build_optimal_walsh_circuit(diag_matrix)
+        
+        >>> # Non-diagonal matrix - raises ValueError
+        >>> hadamard = np.array([[1, 1], [1, -1]]) / np.sqrt(2)
+        >>> gates = build_optimal_walsh_circuit(hadamard)
+        ValueError: Walsh decomposition requires diagonal matrix...
+    
+    References:
+        - Original implementation: https://github.com/morik04/quantum-non-markovian-dynamics
+        - Walsh functions and quantum circuits: arXiv:quant-ph/0406176
+    """
+    # VALIDATION: Check if matrix is diagonal
+    if not _is_diagonal(matrix):
+        raise ValueError(
+            "Walsh decomposition requires a diagonal matrix. "
+            "The input matrix has non-zero off-diagonal elements. "
+            "For non-diagonal unitary matrices, use decompose_unitary_matrix() "
+            "from unitary_decomposition.py with method='pennylane' or method='auto'."
+        )
     aj = np.real(Walsh_coefficients(matrix)) # get aj's for the 2**n diagonal
     n = int(np.log2(len(aj)))
     

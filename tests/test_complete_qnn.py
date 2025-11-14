@@ -2,6 +2,13 @@
 Comprehensive test for complete QNN implementation.
 Tests all 4 paper patterns and full pipeline.
 """
+import sys
+import io
+# Fix Windows console encoding for Unicode characters
+if sys.platform == 'win32':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+
 import os
 import torch
 import numpy as np

@@ -1,5 +1,11 @@
 import numpy as np
 import pytest
+import sys
+import os
+
+# Add parent directory to path for imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from walsh_circuit_decomposition import gray_code, Walsh_coefficients, build_optimal_walsh_circuit
 
 def test_gray_code():
